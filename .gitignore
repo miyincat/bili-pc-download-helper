@@ -1,0 +1,24 @@
+# 依赖
+node_modules/
+
+# 运行时产物（每个用户各不相同，不要提交）
+config.json
+日志.txt
+*.log
+
+# 下载中转目录
+.tmp/
+*.part
+*.part[0-9]
+
+# 开发/调试产物
+tools/debug/
+docs/frames/
+docs/frames_fs/
+预览/
+docs/_*.png
+
+# 系统
+Thumbs.db
+desktop.ini
+.DS_Store
