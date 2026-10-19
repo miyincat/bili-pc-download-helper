@@ -37,7 +37,16 @@ const LOG_FILE = path.join(USER_DATA, 'logs', 'main.log');
 const DEFAULT_OUT_DIR =
   process.env.BDL_OUT_DIR || path.join(process.env.USERPROFILE || '.', 'Videos', 'bilibili', '下载助手');
 
-const INJECT_SRC = fs.readFileSync(path.join(__dirname, 'lib', 'inject.js'), 'utf8');
+const INJECT_FILE = path.join(__dirname, 'lib', 'inject.js');
+const INJECT_BODY = fs.readFileSync(INJECT_FILE, 'utf8');
+// 给注入脚本打上版本号：页面里跑的是哪个版本一目了然，
+// 脚本更新后也能据此判断"这个页面需要重新注入"。
+const INJECT_VERSION = require('crypto')
+  .createHash('sha1')
+  .update(INJECT_BODY)
+  .digest('hex')
+  .slice(0, 12);
+const INJECT_SRC = INJECT_BODY + '\n;window.__BDL_VERSION__ = ' + JSON.stringify(INJECT_VERSION) + ';\n';
 
 // ------------------------------------------------------------------ 配置（下载位置等）
 const CONFIG_FILE = path.join(__dirname, 'config.json');
@@ -214,15 +223,30 @@ async function cdpAlive() {
   }
 }
 
-/** 用于唯一文件名，避免覆盖已有文件 */
+/**
+ * 正在被其他任务占用的文件名。
+ * 只检查"文件是否已存在"是不够的：两个任务同时下同一个标题时，文件都还不存在，
+ * 会拿到同一个名字，然后互相覆盖/互删分片（实测报 ENOENT: .part0）。
+ */
+const reservedPaths = new Set();
+
+/** 用于唯一文件名，避免覆盖已有文件或与其他进行中的任务撞名 */
 function uniquePath(dir, base, ext) {
   let p = path.join(dir, base + ext);
   let i = 2;
-  while (fs.existsSync(p)) {
+  while (fs.existsSync(p) || reservedPaths.has(p.toLowerCase())) {
     p = path.join(dir, base + ' (' + i + ')' + ext);
     i++;
   }
+  reservedPaths.add(p.toLowerCase());
   return p;
+}
+
+/** 任务结束时释放它占用的文件名 */
+function releasePaths(paths) {
+  for (const p of paths || []) {
+    try { reservedPaths.delete(String(p).toLowerCase()); } catch (_) {}
+  }
 }
 
 /**
@@ -510,6 +534,9 @@ async function runJob(job, payload) {
   } finally {
     job.updatedAt = Date.now();
 
+    // 任务结束，释放它占用的文件名，避免后续同名下载一直被迫加 (2)
+    releasePaths([job.file].concat(job.temps || []));
+
     // 只有用户明确勾选了"完成后直接打开文件夹"才弹资源管理器；
     // 默认只在客户端里显示小卡片提示，避免突然切窗口打断观看。
     if (job.status === 'done' && job.file && config.autoOpenFolder) {
@@ -564,8 +591,10 @@ async function attachTarget(target) {
   await cdp.connect();
   await cdp.send('Page.enable');
   await cdp.send('Runtime.enable');
-  // 之后每次页面加载都自动注入
-  await cdp.send('Page.addScriptToEvaluateOnNewDocument', { source: INJECT_SRC });
+  // 之后每次页面加载都自动注入（记住 identifier，更新脚本时要先摘掉旧的，
+  // 否则重载后会同时跑新旧两个脚本）
+  const reg = await cdp.send('Page.addScriptToEvaluateOnNewDocument', { source: INJECT_SRC });
+  cdp.scriptId = reg && reg.identifier;
   // 当前已经加载好的页面，立刻注入一次
   await cdp.evaluate(INJECT_SRC).catch(() => {});
   attached.set(target.id, cdp);
@@ -596,10 +625,41 @@ async function watchTargets() {
   for (const t of players) {
     const old = attached.get(t.id);
     if (old && !old.closed) {
-      // 健康检查：确认注入还活着
+      // 健康检查：① 注入是否还活着；② 版本是不是最新的。
+      // 只看 "已注入" 不够——脚本更新后旧实例还活着，会出现"修好了但页面还在报旧错"。
       try {
-        const ok = await old.evaluate('!!window.__BDL_INSTALLED__', 4000);
-        if (!ok) await old.evaluate(INJECT_SRC).catch(() => {});
+        const alive = await old.evaluate('!!window.__BDL_INSTALLED__', 4000);
+        if (!alive) {
+          await old.evaluate(INJECT_SRC).catch(() => {});
+        } else {
+          const ver = await old.evaluate('window.__BDL_VERSION__ || ""', 4000);
+          if (ver !== INJECT_VERSION) {
+            // 先把"下次加载要跑的脚本"换成新版（旧的要摘掉，否则会同时注入两份）
+            try {
+              if (old.scriptId) {
+                await old
+                  .send('Page.removeScriptToEvaluateOnNewDocument', { identifier: old.scriptId })
+                  .catch(() => {});
+              }
+              const reg = await old.send('Page.addScriptToEvaluateOnNewDocument', { source: INJECT_SRC });
+              old.scriptId = reg && reg.identifier;
+            } catch (_) {}
+
+            // 新脚本开头会调 __BDL_TEARDOWN__ 把旧实例拆掉；
+            // 但如果页面里是"还没有自毁入口"的老版本，只能靠重载页面清理。
+            const canTeardown = await old
+              .evaluate('typeof window.__BDL_TEARDOWN__ === "function"', 3000)
+              .catch(() => false);
+
+            if (canTeardown) {
+              await old.evaluate(INJECT_SRC).catch(() => {});
+            } else {
+              log('页面里是旧版注入（无自毁入口），重载页面以清理：' + t.url.slice(0, 50));
+              await old.send('Page.reload', {}).catch(() => {});
+            }
+            log('注入脚本已更新到 ' + INJECT_VERSION + '：' + t.url.slice(0, 50));
+          }
+        }
       } catch (_) {
         attached.delete(t.id);
       }
