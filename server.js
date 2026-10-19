@@ -569,7 +569,7 @@ async function attachTarget(target) {
   // 当前已经加载好的页面，立刻注入一次
   await cdp.evaluate(INJECT_SRC).catch(() => {});
   attached.set(target.id, cdp);
-  log('已注入播放器窗口:', target.url.slice(0, 60));
+  log('已注入页面:', target.url.slice(0, 60));
   return cdp;
 }
 
@@ -581,7 +581,17 @@ async function watchTargets() {
   } catch (_) {
     return;
   }
-  const players = list.filter((t) => t.type === 'page' && /player\.html/.test(t.url || ''));
+  // 注入范围：客户端所有页面。
+  // 早期版本只注入 player.html，但客户端改版后部分视频会在
+  // index.html#/page/ugc-season?cid=…&bvid=… 这类页面里播放，只认 player.html 会漏掉。
+  // 注入脚本自己会判断"页面里有没有 <video>"，没有就不接管右键。
+  const players = list.filter(
+    (t) =>
+      t.type === 'page' &&
+      typeof t.url === 'string' &&
+      /^https?:\/\/bilipc\.bilibili\.com\//.test(t.url) &&
+      t.webSocketDebuggerUrl
+  );
 
   for (const t of players) {
     const old = attached.get(t.id);
