@@ -477,8 +477,12 @@ async function runJob(job, payload) {
     job.temps.push(vTmp, aTmp);
     await Promise.all([dlVideo, dlAudio]);
 
-    const out = uniquePath(targetDir, title, '.mp4');
+    // 高清下载：文件名带上分辨率标记，方便一眼区分原生/放大
+    const targetHeight = Number(payload.targetHeight) || 0;
+    const hiresTag = mode === 'hires' && targetHeight ? (targetHeight >= 2160 ? ' [4K]' : ' [2K]') : '';
+    const out = uniquePath(targetDir, title + hiresTag, '.mp4');
     job.file = out;
+    job.targetHeight = targetHeight;
 
     if (!audio || !audio.url) {
       // 没有音轨，直接改名
@@ -511,6 +515,39 @@ async function runJob(job, payload) {
     try { fs.unlinkSync(vTmp); } catch (_) {}
     try { fs.unlinkSync(aTmp); } catch (_) {}
     try { fs.rmdirSync(tmpDir); } catch (_) {}
+
+    // ---- 高清下载：源片不够高时放大到目标分辨率（插值，不是真实细节）
+    const targetH = Number(payload.targetHeight) || 0;
+    if (mode === 'hires' && payload.upscale && targetH) {
+      job.status = 'upscaling';
+      job.upscalePercent = 0;
+      job.percent = 0;
+      job.updatedAt = Date.now();
+      log('开始放大到 ' + targetH + 'p：' + path.basename(out));
+
+      const upTmp = out + '.up.mp4';
+      job.temps.push(upTmp);
+
+      await bili.upscaleWithFfmpeg(
+        FFMPEG,
+        out,
+        upTmp,
+        targetH,
+        Number(payload.duration) || 0,
+        (pct) => {
+          job.upscalePercent = pct;
+          job.percent = pct;
+          job.updatedAt = Date.now();
+        },
+        job.abort
+      );
+
+      fs.renameSync(upTmp, out);
+      try {
+        if (job.temps.includes(upTmp)) job.temps.splice(job.temps.indexOf(upTmp), 1);
+      } catch (_) {}
+      log('放大完成:', out);
+    }
 
     job.status = 'done';
     job.percent = 100;
@@ -993,6 +1030,8 @@ const server = http.createServer(async (req, res) => {
         file: job.file,
         error: job.error,
         title: job.title,
+        upscalePercent: job.upscalePercent || 0,
+        targetHeight: job.targetHeight || 0,
       });
     }
 
