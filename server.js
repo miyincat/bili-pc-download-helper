@@ -186,9 +186,18 @@ const log = (...a) => {
   } catch (_) {}
 };
 
+// ---- 崩溃可视：以前进程被系统/任务管理器意外结束时完全没痕迹，
+// 只表现为"右键菜单突然没了"。至少把原因记进日志，配合守护进程自动拉起。
+process.on('uncaughtException', (e) => {
+  try { log('崩溃（uncaughtException）：' + ((e && e.stack) || e)); } catch (_) {}
+  try { process.exit(1); } catch (_) {}
+});
+process.on('unhandledRejection', (e) => {
+  try { log('未处理的 Promise 拒绝：' + ((e && e.stack) || e)); } catch (_) {}
+});
+
 // ------------------------------------------------------------------ 工具函数
-function jsonBody(req) {
-  return new Promise((resolve) => {
+function jsonBody(req) {  return new Promise((resolve) => {
     let d = '';
     req.on('data', (c) => {
       d += c;
