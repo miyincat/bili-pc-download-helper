@@ -489,6 +489,7 @@ async function runJob(job, payload) {
     // 高清下载：文件名带上分辨率标记，方便一眼区分原生/放大
     const targetHeight = Number(payload.targetHeight) || 0;
     const hiresTag = mode === 'hires' && targetHeight ? (targetHeight >= 2160 ? ' [4K]' : ' [2K]') : '';
+
     const out = uniquePath(targetDir, title + hiresTag, '.mp4');
     job.file = out;
     job.targetHeight = targetHeight;
