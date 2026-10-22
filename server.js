@@ -810,6 +810,65 @@ function portOpen(port, timeoutMs = 600) {
   });
 }
 
+// 客户端进程还在、下载端口也通，但可能"一个可见窗口都没有"。
+// 用户关掉主窗口后，B站 的单实例机制会让再双击图标毫无反应，
+// 看起来就是"B站打不开了"。这里定期检查：有隐藏窗口就唤醒，彻底没有就重启。
+const WIN_PS = path.join(__dirname, 'tools', 'client-window.ps1');
+dog.lastWinCheck = 0;
+dog.noWin = 0;
+
+function jobActive() {
+  for (const j of jobs.values()) {
+    if (['downloading', 'merging', 'upscaling', 'cancelling'].includes(j.status)) return true;
+  }
+  return false;
+}
+
+function probeClientWindow(fix) {
+  return new Promise((resolve) => {
+    const args = ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', WIN_PS];
+    if (fix) args.push('-Fix');
+    execFile('powershell.exe', args, { windowsHide: true, timeout: 20000 }, (err, stdout) => {
+      resolve(String(stdout || '').trim());
+    });
+  });
+}
+
+async function maybeFixWindow() {
+  const now = Date.now();
+  if (now - dog.lastWinCheck < 30000) return; // 30 秒一次就够了
+  if (jobActive()) return; // 下载中不折腾窗口
+  dog.lastWinCheck = now;
+
+  const state = await probeClientWindow(false);
+
+  if (state.indexOf('VISIBLE') === 0 || state.indexOf('NOMAIN') === 0) {
+    dog.noWin = 0;
+    return;
+  }
+
+  if (state.indexOf('HIDDEN') === 0) {
+    log('看门狗：客户端窗口不见了，正在唤醒…');
+    await probeClientWindow(true);
+    dog.noWin = 0;
+    return;
+  }
+
+  // NONE：进程在，但没有一个正常的窗口
+  dog.noWin++;
+  if (dog.noWin >= 2) {
+    dog.noWin = 0;
+    log('看门狗：客户端没有可用窗口，正在重启客户端…');
+    await killClient();
+    await new Promise((r) => setTimeout(r, 2500));
+    try {
+      spawnClientWithCDP();
+    } catch (e) {
+      log('看门狗：重启客户端失败 ' + e.message);
+    }
+  }
+}
+
 async function watchdog() {
   const cdp = await cdpAlive();
 
@@ -818,6 +877,7 @@ async function watchdog() {
     dog.hadCdp = true;
     dog.tries = 0;
     dog.warned = false;
+    maybeFixWindow().catch(() => {});
     return;
   }
 
