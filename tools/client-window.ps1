@@ -65,11 +65,11 @@ public class BiliWin {
 
     if (!fix) return "HIDDEN|" + hidden.ToInt64() + "|" + hiddenW + "x" + hiddenH;
 
+    // Only make the window visible: do not steal focus and do not move it.
+    // (Restoring + foregrounding used to interrupt playback.)
     ShowWindow(hidden, 9);
     ShowWindow(hidden, 5);
-    SetWindowPos(hidden, IntPtr.Zero, 80, 60, 0, 0, 0x0041);
-    SetForegroundWindow(hidden);
-    System.Threading.Thread.Sleep(500);
+    System.Threading.Thread.Sleep(300);
 
     return "FIXED|" + hidden.ToInt64() + "|" + hiddenW + "x" + hiddenH;
   }

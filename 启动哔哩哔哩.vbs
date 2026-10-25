@@ -9,7 +9,7 @@
 
 Option Explicit
 
-Dim sh, fso, dir, clientExe, supVbs
+Dim sh, fso, dir, clientExe, supVbs, lnk
 
 Set sh = CreateObject("WScript.Shell")
 Set fso = CreateObject("Scripting.FileSystemObject")
@@ -26,9 +26,18 @@ If Not HelperAlive() Then
     WScript.Sleep 2500
 End If
 
-' 2) open the client, adding the debug port so the helper can attach
+' 2) open the client through Explorer + a .lnk that carries the debug port.
+' Why not run the exe directly: on this client, a direct Run/Start from WSH or
+' cmd silently fails to launch (only the shell path works), and Explorer cannot
+' pass arguments to a bare exe. A shortcut can.
+lnk = dir & "\tools\client-cdp.lnk"
 On Error Resume Next
-sh.Run """" & clientExe & """ --remote-debugging-port=9333", 1, False
+If fso.FileExists(lnk) Then
+    sh.Run "explorer.exe """ & lnk & """", 0, False
+Else
+    sh.CurrentDirectory = "C:\Program Files\bilibili"
+    sh.Run """" & clientExe & """ --remote-debugging-port=9333", 1, False
+End If
 On Error GoTo 0
 
 Function HelperAlive()

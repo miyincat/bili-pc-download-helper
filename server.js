@@ -731,6 +731,16 @@ async function watchTargets() {
 
 // ------------------------------------------------------------------ 启动/重启客户端
 function spawnClientWithCDP() {
+  // 实测：这个客户端只有经 Explorer 走 shell 才能真正启动，
+  // 直接用 spawn/CreateProcess 会静默失败（进程 0 个，无任何报错）。
+  // 而 Explorer 无法给裸 exe 传参数，所以预先准备了一个带
+  // --remote-debugging-port 的快捷方式，让 Explorer 去点它。
+  const lnk = path.join(__dirname, 'tools', 'client-cdp.lnk');
+  if (fs.existsSync(lnk)) {
+    execFile('explorer.exe', [lnk], { windowsHide: true }, () => {});
+    return 0;
+  }
+
   const env = Object.assign({}, process.env);
   // ★ 关键：这两个变量会让 Electron 退化成 Node 解释器，必须去掉
   delete env.ELECTRON_RUN_AS_NODE;
@@ -834,31 +844,59 @@ function probeClientWindow(fix) {
   });
 }
 
+/** 有没有页面正在放视频（正在看的时候绝不去动窗口） */
+async function anyVideoPlaying() {
+  for (const [, cdp] of attached) {
+    try {
+      const cur = await cdp.evaluate(
+        '(()=>{var v=document.querySelector("video");return v&&!v.paused&&!v.ended?Math.round(v.currentTime):0;})()',
+        1500
+      );
+      if (cur && cur > 0) return true;
+    } catch (_) {}
+  }
+  return false;
+}
+
 async function maybeFixWindow() {
   const now = Date.now();
   if (now - dog.lastWinCheck < 30000) return; // 30 秒一次就够了
   if (jobActive()) return; // 下载中不折腾窗口
   dog.lastWinCheck = now;
 
+  // 正在看视频时完全不干预：唤醒窗口会打断播放，甚至让画面卡黑
+  if (await anyVideoPlaying()) {
+    dog.noWin = 0;
+    dog.hiddenWin = 0;
+    return;
+  }
+
   const state = await probeClientWindow(false);
 
   if (state.indexOf('VISIBLE') === 0 || state.indexOf('NOMAIN') === 0) {
     dog.noWin = 0;
+    dog.hiddenWin = 0;
     return;
   }
 
+  // 窗口被隐藏：要连续 3 次（约 90 秒）才唤醒，避免切换视频时的瞬间误判
   if (state.indexOf('HIDDEN') === 0) {
-    log('看门狗：客户端窗口不见了，正在唤醒…');
-    await probeClientWindow(true);
-    dog.noWin = 0;
+    dog.hiddenWin = (dog.hiddenWin || 0) + 1;
+    if (dog.hiddenWin >= 3) {
+      dog.hiddenWin = 0;
+      log('看门狗：客户端窗口连续 90 秒不可见，正在唤醒…');
+      await probeClientWindow(true);
+    }
     return;
   }
 
-  // NONE：进程在，但没有一个正常的窗口
+  // NONE：进程在、却一个正常窗口都没有。先只记录，
+  // 连续 6 次（约 3 分钟）才重启客户端——重启会中断播放，代价太大。
   dog.noWin++;
-  if (dog.noWin >= 2) {
+  if (dog.noWin === 3) log('看门狗：客户端当前没有可见窗口（再观察一会儿）');
+  if (dog.noWin >= 6) {
     dog.noWin = 0;
-    log('看门狗：客户端没有可用窗口，正在重启客户端…');
+    log('看门狗：客户端持续 3 分钟没有窗口，正在重启客户端…');
     await killClient();
     await new Promise((r) => setTimeout(r, 2500));
     try {
@@ -1177,9 +1215,21 @@ async function main() {
 
   server.on('error', (e) => {
     if (e.code === 'EADDRINUSE') {
-      console.error('\n端口 ' + PORT + ' 已被占用，可能本工具已经在运行了。');
-      console.error('可以在托盘/任务管理器里结束 node.exe，或设置 BDL_PORT 换端口。\n');
-      process.exit(1);
+      // 端口被占用通常意味着"已经有一个实例在跑"。
+      // 这里**不能退出**：守护进程会在 5 秒后再拉起本进程，
+      // 而端口依然被占 → 变成每 5 秒一次的无限重启（实测刷了几十条日志）。
+      // 改成安静等待：每 20 秒重试一次，直到端口空出来。
+      if (!global.__bdlAddrRetry) {
+        global.__bdlAddrRetry = 0;
+        log('端口 ' + PORT + ' 已被占用（可能已有实例在运行），将每 20 秒重试，不再反复重启');
+      }
+      global.__bdlAddrRetry++;
+      setTimeout(() => {
+        try {
+          server.listen(PORT, '127.0.0.1');
+        } catch (_) {}
+      }, 20000);
+      return;
     }
     console.error('服务启动失败:', e.message);
     process.exit(1);
