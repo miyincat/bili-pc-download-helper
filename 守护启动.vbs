@@ -1,12 +1,8 @@
 ' Bilibili Downloader - supervisor.
 '
-' Why: server.js can exit (crash, killed by a system tool, OOM...). If nothing
-' restarts it, the right-click menu silently disappears until you reboot.
-' This script keeps it alive: whenever node exits, wait 5s and start it again.
-'
-' To stop everything: run 停止下载助手.bat (it kills this supervisor first).
-'
-' Keep this file ASCII-only: Windows Script Host reads .vbs as ANSI.
+' Keeps server.js alive: if it is not running (or died), start it; otherwise
+' do nothing. The health check also prevents duplicate instances when the
+' supervisor happens to be started twice.
 
 Option Explicit
 
@@ -26,7 +22,24 @@ sh.CurrentDirectory = dir
 cmd = nodeExe & " """ & dir & "\server.js"" --no-launch"
 
 Do
-    ' 0 = hidden window, True = wait until node exits
-    sh.Run cmd, 0, True
+    If Not ServerAlive() Then
+        On Error Resume Next
+        sh.Run cmd, 0, True
+        On Error GoTo 0
+    End If
     WScript.Sleep 5000
 Loop
+
+Function ServerAlive()
+    Dim http
+    ServerAlive = False
+    On Error Resume Next
+    Set http = CreateObject("WinHttp.WinHttpRequest.5.1")
+    http.Open "GET", "http://127.0.0.1:8765/api/health", False
+    http.Send
+    If Err.Number = 0 Then
+        If http.Status = 200 Then ServerAlive = True
+    End If
+    Err.Clear
+    On Error GoTo 0
+End Function

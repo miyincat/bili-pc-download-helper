@@ -915,7 +915,8 @@ async function watchdog() {
     dog.hadCdp = true;
     dog.tries = 0;
     dog.warned = false;
-    maybeFixWindow().catch(() => {});
+    // 不再检查/唤醒窗口：之前那套逻辑会把隐藏的空白播放窗显示出来，
+    // 表现为突然多出一个黑窗，且会打断正在播放的视频。
     return;
   }
 
