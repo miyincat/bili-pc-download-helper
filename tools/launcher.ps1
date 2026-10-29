@@ -25,9 +25,16 @@ function Test-ServerAlive {
 }
 
 if (-not (Test-ServerAlive)) {
-  Start-Process -FilePath $psExe -WindowStyle Hidden -ArgumentList @(
-    '-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden', '-File', "`"$sup`""
-  )
+  # Start the supervisor through its own shortcut so Explorer is its parent.
+  # (A supervisor started from another process dies together with that process.)
+  $supLnk = Join-Path $tools 'supervisor.lnk'
+  if (Test-Path $supLnk) {
+    Start-Process -FilePath 'explorer.exe' -ArgumentList "`"$supLnk`""
+  } else {
+    Start-Process -FilePath $psExe -WindowStyle Hidden -ArgumentList @(
+      '-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden', '-File', "`"$sup`""
+    )
+  }
   Start-Sleep -Seconds 3
 }
 
